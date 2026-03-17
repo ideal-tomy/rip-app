@@ -27,7 +27,13 @@ class _HomeScreenState extends State<HomeScreen> {
   final TextEditingController _commentController = TextEditingController();
 
   int _adminTabIndex = 0;
-  
+
+  final ScrollController _chatScrollController = ScrollController();
+  bool _isAutoScroll = true;
+  bool _skipNextScrollCheck = false;
+  bool _hasReachedBottomOnce = false; // 一度でも下端までスクロール済み（初期レイアウトの誤検知防止）
+  static const double _scrollThreshold = 50.0;
+
   String? _selectedStore;
   List<String> _selectedTargets = [];
   int _shotCount = 1;
@@ -44,11 +50,39 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _chatScrollController.dispose();
     _nameController.dispose();
     _passwordController.dispose();
     _commentController.dispose();
     _tapResetTimer?.cancel();
     super.dispose();
+  }
+
+  bool _handleScrollNotification(ScrollNotification notification) {
+    if (_skipNextScrollCheck) return false;
+    // 初期スクロール完了前は無視（マウスホイール・トラックパッド・タッチすべてに対応）
+    if (!_hasReachedBottomOnce) return false;
+
+    final pos = notification.metrics;
+    final atBottom = pos.pixels >= pos.maxScrollExtent - _scrollThreshold;
+    if (mounted) setState(() => _isAutoScroll = atBottom);
+    return false;
+  }
+
+  void _scrollToBottomAndResume() {
+    if (!_chatScrollController.hasClients) return;
+    setState(() => _isAutoScroll = true);
+    _skipNextScrollCheck = true;
+    _chatScrollController.animateTo(
+      _chatScrollController.position.maxScrollExtent,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOut,
+    ).then((_) {
+      if (mounted) {
+        _skipNextScrollCheck = false;
+        _hasReachedBottomOnce = true;
+      }
+    });
   }
 
   void _onTitleTap() {
@@ -217,6 +251,7 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       await addComment(senderName: senderName, text: text);
       _commentController.clear();
+      if (mounted) _scrollToBottomAndResume();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -333,6 +368,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _selectedTargets.clear();
           _shotCount = 1;
         });
+        _scrollToBottomAndResume();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: const Row(
@@ -527,47 +563,97 @@ class _HomeScreenState extends State<HomeScreen> {
       children: [
         Expanded(
           flex: 1,
-          child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: watchMessages(),
-            builder: (context, snapshot) {
-              if (snapshot.hasError) {
-                return Center(
-                  child: Text('チャットエラー: ${snapshot.error}', style: const TextStyle(color: Colors.redAccent, fontSize: 12)),
-                );
-              }
-              if (!snapshot.hasData) {
-                return const Center(child: CircularProgressIndicator(color: Colors.amberAccent, strokeWidth: 2));
-              }
-              final docs = snapshot.data!.docs;
-              if (docs.isEmpty) {
-                return const Center(
-                  child: Text('チャットが始まるとここに表示されます', style: TextStyle(color: Colors.white38, fontSize: 14)),
-                );
-              }
-              return ListView.builder(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                itemCount: docs.length,
-                itemBuilder: (context, index) {
-                  final d = docs[index].data();
-                  final senderName = d['senderName'] as String? ?? '';
-                  final text = d['text'] as String? ?? '';
-                  final isSuperChat = d['isSuperChat'] as bool? ?? false;
-                  final senderStore = d['senderStore'] as String?;
-                  final senderNickname = d['senderNickname'] as String?;
-                  final targets = List<String>.from(d['targets'] ?? []);
-                  final shotCount = (d['shotCount'] as num?)?.toInt();
-                  return _buildChatMessage(
-                    senderName: senderName,
-                    text: text,
-                    isSuperChat: isSuperChat,
-                    senderStore: senderStore,
-                    senderNickname: senderNickname,
-                    targets: targets,
-                    shotCount: shotCount,
+          child: Stack(
+            children: [
+              StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                stream: watchMessages(),
+                builder: (context, snapshot) {
+                  if (snapshot.hasError) {
+                    return Center(
+                      child: Text('チャットエラー: ${snapshot.error}', style: const TextStyle(color: Colors.redAccent, fontSize: 12)),
+                    );
+                  }
+                  if (!snapshot.hasData) {
+                    return const Center(child: CircularProgressIndicator(color: Colors.amberAccent, strokeWidth: 2));
+                  }
+                  final docs = snapshot.data!.docs;
+                  if (docs.isEmpty) {
+                    return const Center(
+                      child: Text('チャットが始まるとここに表示されます', style: TextStyle(color: Colors.white38, fontSize: 14)),
+                    );
+                  }
+                  if (_isAutoScroll) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (_chatScrollController.hasClients && mounted) {
+                        _skipNextScrollCheck = true;
+                        _chatScrollController.animateTo(
+                          _chatScrollController.position.maxScrollExtent,
+                          duration: const Duration(milliseconds: 300),
+                          curve: Curves.easeOut,
+                        ).then((_) {
+                          if (mounted) {
+                            _skipNextScrollCheck = false;
+                            _hasReachedBottomOnce = true;
+                          }
+                        });
+                      }
+                    });
+                  }
+                  return NotificationListener<ScrollNotification>(
+                    onNotification: _handleScrollNotification,
+                    child: ListView.builder(
+                      controller: _chatScrollController,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      itemCount: docs.length,
+                      itemBuilder: (context, index) {
+                        final d = docs[index].data();
+                        final senderName = d['senderName'] as String? ?? '';
+                        final text = d['text'] as String? ?? '';
+                        final isSuperChat = d['isSuperChat'] as bool? ?? false;
+                        final senderStore = d['senderStore'] as String?;
+                        final senderNickname = d['senderNickname'] as String?;
+                        final targets = List<String>.from(d['targets'] ?? []);
+                        final shotCount = (d['shotCount'] as num?)?.toInt();
+                        return _buildChatMessage(
+                          senderName: senderName,
+                          text: text,
+                          isSuperChat: isSuperChat,
+                          senderStore: senderStore,
+                          senderNickname: senderNickname,
+                          targets: targets,
+                          shotCount: shotCount,
+                        );
+                      },
+                    ),
                   );
                 },
-              );
-            },
+              ),
+              if (!_isAutoScroll)
+                Positioned(
+                  bottom: 12,
+                  right: 12,
+                  child: Material(
+                    color: Colors.amberAccent.withOpacity(0.9),
+                    borderRadius: BorderRadius.circular(24),
+                    elevation: 4,
+                    child: InkWell(
+                      onTap: _scrollToBottomAndResume,
+                      borderRadius: BorderRadius.circular(24),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Text('⬇', style: TextStyle(fontSize: 16)),
+                            const SizedBox(width: 6),
+                            Text('最新のコメント', style: TextStyle(color: Colors.black87, fontSize: 13, fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
           ),
         ),
         Padding(
