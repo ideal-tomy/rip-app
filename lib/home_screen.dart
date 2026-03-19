@@ -76,7 +76,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _chatScrollController.animateTo(
       _chatScrollController.position.maxScrollExtent,
       duration: const Duration(milliseconds: 300),
-      curve: Curves.easeOut,
+      curve: Curves.easeOutCubic,
     ).then((_) {
       if (mounted) {
         _skipNextScrollCheck = false;
@@ -589,7 +589,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         _chatScrollController.animateTo(
                           _chatScrollController.position.maxScrollExtent,
                           duration: const Duration(milliseconds: 300),
-                          curve: Curves.easeOut,
+                          curve: Curves.easeOutCubic,
                         ).then((_) {
                           if (mounted) {
                             _skipNextScrollCheck = false;
