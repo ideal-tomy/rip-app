@@ -29,6 +29,7 @@ Future<DocumentReference<Map<String, dynamic>>> addOrder({
     'shotCount': shotCount,
     'totalPrice': totalPrice,
     'isServed': false,
+    'status': 'pending',
     'createdAt': FieldValue.serverTimestamp(),
   });
 }

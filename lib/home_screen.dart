@@ -2,8 +2,12 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+import 'config/event_config.dart';
 import 'services/order_service.dart';
 import 'services/message_service.dart';
+import 'widgets/twitch_embed.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -18,6 +22,8 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isAdminMode = false;
   bool _isLoading = false;
   bool _isProfileSet = false;
+  /// PayPay 起動後、煽り前の「支払いを完了しました」帯表示用
+  bool _awaitingTequilaAfterPayment = false;
 
   int _tapCount = 0;
   Timer? _tapResetTimer;
@@ -277,8 +283,80 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
+    final goPay = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: Colors.grey[900],
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+            side: const BorderSide(color: Colors.amberAccent, width: 2),
+          ),
+          title: const Center(
+            child: Text('テキーラ購入', style: TextStyle(color: Colors.amberAccent, fontWeight: FontWeight.bold)),
+          ),
+          content: const Text(
+            '決済画面へ進みます。支払いが完了したらアプリに戻ってください',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.white70, fontSize: 16, height: 1.4),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('キャンセル', style: TextStyle(color: Colors.white54)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.amberAccent,
+                foregroundColor: Colors.black,
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              ),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('支払う', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (goPay != true) return;
+
+    final uri = Uri.parse(kPayPayReceiveUrl);
+    try {
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('PayPay リンクを開けませんでした'),
+              backgroundColor: Colors.redAccent,
+            ),
+          );
+        }
+        return;
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('PayPay の起動に失敗: $e'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+      return;
+    }
+
+    if (mounted) {
+      setState(() => _awaitingTequilaAfterPayment = true);
+    }
+  }
+
+  Future<String?> _showTequilaMessageDialog() async {
     final targetsStr = _selectedTargets.join('、');
-    final tequilaMessage = await showDialog<String>(
+    return showDialog<String>(
       context: context,
       barrierDismissible: false,
       builder: (context) {
@@ -331,11 +409,15 @@ class _HomeScreenState extends State<HomeScreen> {
         );
       },
     );
+  }
 
+  Future<void> _onTequilaPaymentCompleteTapped() async {
+    if (_isLoading) return;
+    final tequilaMessage = await _showTequilaMessageDialog();
     if (tequilaMessage == null) return;
 
     setState(() => _isLoading = true);
-
+    final targetsStr = _selectedTargets.join('、');
     try {
       await addOrder(
         senderStore: _selectedStore!,
@@ -367,6 +449,7 @@ class _HomeScreenState extends State<HomeScreen> {
         setState(() {
           _selectedTargets.clear();
           _shotCount = 1;
+          _awaitingTequilaAfterPayment = false;
         });
         _scrollToBottomAndResume();
         ScaffoldMessenger.of(context).showSnackBar(
@@ -399,6 +482,38 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Widget _buildPaymentCompleteBar() {
+    return Container(
+      width: double.infinity,
+      color: Colors.black,
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            'PayPay で支払いを終えたら、下のボタンを押して注文を完了してください',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.3),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            height: 52,
+            child: ElevatedButton(
+              onPressed: _onTequilaPaymentCompleteTapped,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.amberAccent,
+                foregroundColor: Colors.black87,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              child: const Text('支払いを完了しました', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _markAsServed(String orderId) {
     markAsServed(orderId);
   }
@@ -421,6 +536,7 @@ class _HomeScreenState extends State<HomeScreen> {
         'count': shotCount,
         'time': timeStr,
         'isServed': d['isServed'] as bool? ?? false,
+        'status': d['status'] as String?,
       };
     }).toList();
   }
@@ -559,221 +675,274 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildOrderView() {
-    return Column(
+    final bottomInset = MediaQuery.viewPaddingOf(context).bottom;
+
+    return Stack(
+      fit: StackFit.expand,
+      clipBehavior: Clip.none,
       children: [
-        Expanded(
-          flex: 1,
-          child: Stack(
-            children: [
-              StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                stream: watchMessages(),
-                builder: (context, snapshot) {
-                  if (snapshot.hasError) {
-                    return Center(
-                      child: Text('チャットエラー: ${snapshot.error}', style: const TextStyle(color: Colors.redAccent, fontSize: 12)),
-                    );
-                  }
-                  if (!snapshot.hasData) {
-                    return const Center(child: CircularProgressIndicator(color: Colors.amberAccent, strokeWidth: 2));
-                  }
-                  final docs = snapshot.data!.docs;
-                  if (docs.isEmpty) {
-                    return const Center(
-                      child: Text('チャットが始まるとここに表示されます', style: TextStyle(color: Colors.white38, fontSize: 14)),
-                    );
-                  }
-                  if (_isAutoScroll) {
-                    WidgetsBinding.instance.addPostFrameCallback((_) {
-                      if (_chatScrollController.hasClients && mounted) {
-                        _skipNextScrollCheck = true;
-                        _chatScrollController.animateTo(
-                          _chatScrollController.position.maxScrollExtent,
-                          duration: const Duration(milliseconds: 300),
-                          curve: Curves.easeOutCubic,
-                        ).then((_) {
-                          if (mounted) {
-                            _skipNextScrollCheck = false;
-                            _hasReachedBottomOnce = true;
-                          }
-                        });
-                      }
-                    });
-                  }
-                  return NotificationListener<ScrollNotification>(
-                    onNotification: _handleScrollNotification,
-                    child: ListView.builder(
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            ColoredBox(
+              color: const Color(0xFF0D0D0D),
+              child: AspectRatio(
+                aspectRatio: 16 / 9,
+                child: TwitchPlayerEmbed(),
+              ),
+            ),
+            if (_awaitingTequilaAfterPayment) _buildPaymentCompleteBar(),
+            Expanded(
+              child: NotificationListener<ScrollNotification>(
+                onNotification: _handleScrollNotification,
+                child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                  stream: watchMessages(),
+                  builder: (context, snapshot) {
+                    final docs = snapshot.data?.docs ?? [];
+
+                    if (_isAutoScroll && snapshot.hasData && docs.isNotEmpty) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (_chatScrollController.hasClients && mounted) {
+                          _skipNextScrollCheck = true;
+                          _chatScrollController
+                              .animateTo(
+                            _chatScrollController.position.maxScrollExtent,
+                            duration: const Duration(milliseconds: 300),
+                            curve: Curves.easeOutCubic,
+                          )
+                              .then((_) {
+                            if (mounted) {
+                              _skipNextScrollCheck = false;
+                              _hasReachedBottomOnce = true;
+                            }
+                          });
+                        }
+                      });
+                    }
+
+                    return SingleChildScrollView(
                       controller: _chatScrollController,
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      itemCount: docs.length,
-                      itemBuilder: (context, index) {
-                        final d = docs[index].data();
-                        final senderName = d['senderName'] as String? ?? '';
-                        final text = d['text'] as String? ?? '';
-                        final isSuperChat = d['isSuperChat'] as bool? ?? false;
-                        final senderStore = d['senderStore'] as String?;
-                        final senderNickname = d['senderNickname'] as String?;
-                        final targets = List<String>.from(d['targets'] ?? []);
-                        final shotCount = (d['shotCount'] as num?)?.toInt();
-                        return _buildChatMessage(
-                          senderName: senderName,
-                          text: text,
-                          isSuperChat: isSuperChat,
-                          senderStore: senderStore,
-                          senderNickname: senderNickname,
-                          targets: targets,
-                          shotCount: shotCount,
-                        );
-                      },
-                    ),
-                  );
-                },
-              ),
-              if (!_isAutoScroll)
-                Positioned(
-                  bottom: 12,
-                  right: 12,
-                  child: Material(
-                    color: Colors.amberAccent.withOpacity(0.9),
-                    borderRadius: BorderRadius.circular(24),
-                    elevation: 4,
-                    child: InkWell(
-                      onTap: _scrollToBottomAndResume,
-                      borderRadius: BorderRadius.circular(24),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Text('⬇', style: TextStyle(fontSize: 16)),
-                            const SizedBox(width: 6),
-                            Text('最新のコメント', style: TextStyle(color: Colors.black87, fontSize: 13, fontWeight: FontWeight.bold)),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          child: Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _commentController,
-                  style: const TextStyle(color: Colors.white, fontSize: 14),
-                  decoration: InputDecoration(
-                    hintText: 'コメント...',
-                    hintStyle: const TextStyle(color: Colors.white38),
-                    filled: true,
-                    fillColor: Colors.black54,
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(24),
-                      borderSide: const BorderSide(color: Colors.amberAccent),
-                    ),
-                  ),
-                  onSubmitted: (_) => _onSendComment(),
-                ),
-              ),
-              const SizedBox(width: 8),
-              IconButton(
-                icon: const Icon(Icons.send, color: Colors.amberAccent, size: 28),
-                onPressed: _onSendComment,
-              ),
-            ],
-          ),
-        ),
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(color: Colors.black87),
-          child: _isLoading
-              ? const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 20),
-                  child: Column(
-                    children: [
-                      CircularProgressIndicator(color: Colors.amberAccent, strokeWidth: 2),
-                      SizedBox(height: 8),
-                      Text('テキーラを準備中...', style: TextStyle(color: Colors.amberAccent, fontSize: 14, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                )
-              : Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
-                      decoration: BoxDecoration(
-                        color: Colors.black54,
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: Colors.white24),
-                      ),
-                      child: Row(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      child: Column(
                         mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          const Icon(Icons.person, color: Colors.amberAccent, size: 14),
-                          const SizedBox(width: 6),
-                          Text('$_selectedStore (${_nameController.text})', style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                          if (snapshot.hasError)
+                            Padding(
+                              padding: const EdgeInsets.all(24),
+                              child: Text(
+                                'チャットエラー: ${snapshot.error}',
+                                style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+                              ),
+                            )
+                          else if (!snapshot.hasData)
+                            const SizedBox(
+                              height: 200,
+                              child: Center(child: CircularProgressIndicator(color: Colors.amberAccent, strokeWidth: 2)),
+                            )
+                          else if (docs.isEmpty)
+                            const SizedBox(
+                              height: 160,
+                              child: Center(
+                                child: Text(
+                                  'チャットが始まるとここに表示されます',
+                                  style: TextStyle(color: Colors.white38, fontSize: 14),
+                                ),
+                              ),
+                            )
+                          else
+                            ListView.builder(
+                              shrinkWrap: true,
+                              physics: const NeverScrollableScrollPhysics(),
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              itemCount: docs.length,
+                              itemBuilder: (context, index) {
+                                final d = docs[index].data();
+                                final senderName = d['senderName'] as String? ?? '';
+                                final text = d['text'] as String? ?? '';
+                                final isSuperChat = d['isSuperChat'] as bool? ?? false;
+                                final senderStore = d['senderStore'] as String?;
+                                final senderNickname = d['senderNickname'] as String?;
+                                final targets = List<String>.from(d['targets'] ?? []);
+                                final shotCount = (d['shotCount'] as num?)?.toInt();
+                                return _buildChatMessage(
+                                  senderName: senderName,
+                                  text: text,
+                                  isSuperChat: isSuperChat,
+                                  senderStore: senderStore,
+                                  senderNickname: senderNickname,
+                                  targets: targets,
+                                  shotCount: shotCount,
+                                );
+                              },
+                            ),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: TextField(
+                                    controller: _commentController,
+                                    style: const TextStyle(color: Colors.white, fontSize: 14),
+                                    decoration: InputDecoration(
+                                      hintText: 'コメント...',
+                                      hintStyle: const TextStyle(color: Colors.white38),
+                                      filled: true,
+                                      fillColor: Colors.black54,
+                                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                                      border: OutlineInputBorder(
+                                        borderRadius: BorderRadius.circular(24),
+                                        borderSide: const BorderSide(color: Colors.amberAccent),
+                                      ),
+                                    ),
+                                    onSubmitted: (_) => _onSendComment(),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                IconButton(
+                                  icon: const Icon(Icons.send, color: Colors.amberAccent, size: 28),
+                                  onPressed: _onSendComment,
+                                ),
+                              ],
+                            ),
+                          ),
+                          Container(
+                            padding: const EdgeInsets.all(16),
+                            decoration: const BoxDecoration(color: Colors.black87),
+                            child: _isLoading
+                                ? const Padding(
+                                    padding: EdgeInsets.symmetric(vertical: 20),
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        CircularProgressIndicator(color: Colors.amberAccent, strokeWidth: 2),
+                                        SizedBox(height: 8),
+                                        Text(
+                                          'テキーラを準備中...',
+                                          style: TextStyle(color: Colors.amberAccent, fontSize: 14, fontWeight: FontWeight.bold),
+                                        ),
+                                      ],
+                                    ),
+                                  )
+                                : Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                                    children: [
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
+                                        decoration: BoxDecoration(
+                                          color: Colors.black54,
+                                          borderRadius: BorderRadius.circular(16),
+                                          border: Border.all(color: Colors.white24),
+                                        ),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const Icon(Icons.person, color: Colors.amberAccent, size: 14),
+                                            const SizedBox(width: 6),
+                                            Text(
+                                              '$_selectedStore (${_nameController.text})',
+                                              style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(height: 12),
+                                      const Text('誰に祝いのショットを飛ばす？', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                                      const SizedBox(height: 8),
+                                      Wrap(
+                                        spacing: 6,
+                                        runSpacing: 6,
+                                        children: _targets.map((target) {
+                                          final isSelected = _selectedTargets.contains(target);
+                                          return FilterChip(
+                                            label: Text(target, style: const TextStyle(fontSize: 12)),
+                                            labelStyle: TextStyle(
+                                              color: isSelected ? Colors.black : Colors.white,
+                                              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                            ),
+                                            backgroundColor: Colors.black54,
+                                            selectedColor: Colors.amberAccent,
+                                            side: BorderSide(color: isSelected ? Colors.amberAccent : Colors.white24),
+                                            selected: isSelected,
+                                            onSelected: (_) => _toggleTarget(target),
+                                          );
+                                        }).toList(),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: [
+                                          IconButton(
+                                            icon: const Icon(Icons.remove_circle_outline, color: Colors.amberAccent, size: 28),
+                                            onPressed: () {
+                                              if (_shotCount > 1) setState(() => _shotCount--);
+                                            },
+                                          ),
+                                          Text('$_shotCount 杯', style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+                                          IconButton(
+                                            icon: const Icon(Icons.add_circle_outline, color: Colors.amberAccent, size: 28),
+                                            onPressed: () => setState(() => _shotCount++),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 8),
+                                      SizedBox(
+                                        height: 56,
+                                        child: ElevatedButton(
+                                          style: ElevatedButton.styleFrom(
+                                            backgroundColor: Colors.amberAccent,
+                                            foregroundColor: Colors.black87,
+                                            disabledBackgroundColor: Colors.grey[700],
+                                            disabledForegroundColor: Colors.white30,
+                                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+                                          ),
+                                          onPressed: (_isLoading || _awaitingTequilaAfterPayment) ? null : _onSendTequila,
+                                          child: Text(
+                                            _awaitingTequilaAfterPayment ? '支払い確認を完了してください' : 'テキーラを送信！！ 🥃',
+                                            textAlign: TextAlign.center,
+                                            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                          ),
+                          SizedBox(height: bottomInset > 0 ? bottomInset : 8),
                         ],
                       ),
-                    ),
-                    const SizedBox(height: 12),
-                    const Text('誰に祝いのショットを飛ばす？', style: TextStyle(color: Colors.white70, fontSize: 13)),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 6,
-                      runSpacing: 6,
-                      children: _targets.map((target) {
-                        final isSelected = _selectedTargets.contains(target);
-                        return FilterChip(
-                          label: Text(target, style: const TextStyle(fontSize: 12)),
-                          labelStyle: TextStyle(
-                            color: isSelected ? Colors.black : Colors.white,
-                            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                          ),
-                          backgroundColor: Colors.black54,
-                          selectedColor: Colors.amberAccent,
-                          side: BorderSide(color: isSelected ? Colors.amberAccent : Colors.white24),
-                          selected: isSelected,
-                          onSelected: (_) => _toggleTarget(target),
-                        );
-                      }).toList(),
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.remove_circle_outline, color: Colors.amberAccent, size: 28),
-                          onPressed: () {
-                            if (_shotCount > 1) setState(() => _shotCount--);
-                          },
-                        ),
-                        Text('$_shotCount 杯', style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
-                        IconButton(
-                          icon: const Icon(Icons.add_circle_outline, color: Colors.amberAccent, size: 28),
-                          onPressed: () => setState(() => _shotCount++),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    SizedBox(
-                      height: 56,
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.amberAccent,
-                          foregroundColor: Colors.black87,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
-                        ),
-                        onPressed: _onSendTequila,
-                        child: const Text('テキーラを送信！！ 🥃', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                      ),
-                    ),
-                  ],
+                    );
+                  },
                 ),
+              ),
+            ),
+          ],
         ),
+        if (!_isAutoScroll)
+          Positioned(
+            bottom: 12 + bottomInset,
+            right: 12,
+            child: Material(
+              color: Colors.amberAccent.withOpacity(0.9),
+              borderRadius: BorderRadius.circular(24),
+              elevation: 4,
+              child: InkWell(
+                onTap: _scrollToBottomAndResume,
+                borderRadius: BorderRadius.circular(24),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text('⬇', style: TextStyle(fontSize: 16)),
+                      const SizedBox(width: 6),
+                      Text('最新のコメント', style: TextStyle(color: Colors.black87, fontSize: 13, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -865,6 +1034,8 @@ class _HomeScreenState extends State<HomeScreen> {
       itemBuilder: (context, index) {
         final order = orders[index];
         final isServed = order['isServed'] as bool;
+        final orderStatus = order['status'] as String?;
+        final isPending = orderStatus == 'pending';
         final targets = (order['targets'] as List).join(' , ');
         final orderId = order['id'] as String;
 
@@ -889,7 +1060,39 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('$targets 宛', style: TextStyle(color: isServed ? Colors.grey : Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              '$targets 宛',
+                              style: TextStyle(
+                                color: isServed ? Colors.grey : Colors.white,
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                          if (isPending) ...[
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: Colors.amberAccent.withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: Colors.amberAccent, width: 1),
+                              ),
+                              child: const Text(
+                                '確認中',
+                                style: TextStyle(
+                                  color: Colors.amberAccent,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
                       const SizedBox(height: 4),
                       Text('送り主: ${order['store']} (${order['time']})', style: const TextStyle(color: Colors.white54, fontSize: 14)),
                     ],
