@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' show min, max;
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -18,6 +19,8 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   static const String _adminPassword = '1234';
+  static const int _maxValueQuantity = 10;
+  static const int _maxChampagneQuantity = 5;
 
   bool _isAdminMode = false;
   bool _isLoading = false;
@@ -42,7 +45,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   String? _selectedStore;
   List<String> _selectedTargets = [];
-  int _shotCount = 1;
+  String _selectedItemType = 'tequila';
+  int _selectedQuantity = 1;
+  String _orderNote = '';
 
   final List<String> _stores = [
     'ロードスター', 'レラシオン', 'エースクローバー', 'トノップ',
@@ -232,133 +237,405 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  String _targetSelectionSummary() {
-    if (_selectedTargets.isEmpty) {
-      return 'タップして選ぶ（複数選択可）';
+  String _itemLabel(String itemType) => itemLabelByType[itemType] ?? itemType;
+  int _unitPrice(String itemType) => unitPriceByItemType[itemType] ?? 500;
+  bool _requiresTarget(String itemType) => itemType == 'tequila';
+  int _maxQuantity(String itemType) {
+    switch (itemType) {
+      case 'value_pack':
+        return _maxValueQuantity;
+      case 'champagne':
+        return _maxChampagneQuantity;
+      default:
+        return 1;
     }
-    if (_selectedTargets.length <= 3) {
-      return _selectedTargets.join('、');
-    }
-    return '${_selectedTargets.take(2).join('、')} ほか${_selectedTargets.length}人';
   }
 
-  void _showTargetPickerBottomSheet() {
-    if (_isLoading) return;
-    final temp = List<String>.from(_selectedTargets);
-    showModalBottomSheet<void>(
+  int _estimatePrice({
+    required String itemType,
+    required int quantity,
+    required List<String> targets,
+  }) {
+    final unit = _unitPrice(itemType);
+    return _requiresTarget(itemType)
+        ? unit * quantity * targets.length
+        : unit * quantity;
+  }
+
+  Widget _buildItemToggleButton({
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return SizedBox(
+      height: 42,
+      child: Material(
+        color: selected ? Colors.amberAccent : Colors.black54,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(12),
+          child: Center(
+            child: Text(
+              label,
+              style: TextStyle(
+                color: selected ? Colors.black87 : Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _targetSummary(List<String> targets) {
+    if (targets.isEmpty) return '未選択';
+    if (targets.length <= 3) return targets.join('、');
+    return '${targets.take(2).join('、')} ほか${targets.length}人';
+  }
+
+  Future<bool> _showLaunchOrderSheet() async {
+    var tempItemType = _selectedItemType;
+    var tempQuantity = _selectedQuantity;
+    var tempTargets = List<String>.from(_selectedTargets);
+    var tempNote = _orderNote;
+
+    final confirmed = await showModalBottomSheet<bool>(
       context: context,
+      isScrollControlled: true,
+      isDismissible: true,
+      // 上部のタップ不感回避: シートのドラッグ領域が
+      // 商品切替/先頭チップを奪うケースがあるため明示的に無効化
+      enableDrag: false,
       backgroundColor: const Color(0xFF1A1A1A),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      isScrollControlled: true,
+      useSafeArea: true,
       builder: (ctx) {
-        return Padding(
-          padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(ctx).bottom),
-          child: StatefulBuilder(
-            builder: (context, setModalState) {
-              return SafeArea(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Center(
-                      child: Container(
-                        margin: const EdgeInsets.only(top: 8, bottom: 4),
-                        width: 40,
-                        height: 4,
-                        decoration: BoxDecoration(
-                          color: Colors.white24,
-                          borderRadius: BorderRadius.circular(2),
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            final requiresTarget = _requiresTarget(tempItemType);
+            final maxQty = _maxQuantity(tempItemType);
+            if (!requiresTarget) {
+              tempTargets = <String>[];
+            }
+            if (tempQuantity > maxQty) {
+              tempQuantity = maxQty;
+            }
+            final est = _estimatePrice(
+              itemType: tempItemType,
+              quantity: tempQuantity,
+              targets: tempTargets,
+            );
+
+            final viewInsetsBottom = MediaQuery.viewInsetsOf(ctx).bottom;
+            final screenH = MediaQuery.sizeOf(ctx).height;
+            final available = screenH - viewInsetsBottom - 16;
+            final sheetH = min(
+              max(screenH * 0.82, 360.0),
+              max(280.0, available),
+            );
+
+            const double targetBlockHeight = 220;
+
+            return SafeArea(
+              child: Padding(
+                padding: EdgeInsets.only(bottom: viewInsetsBottom + 12),
+                child: SizedBox(
+                  height: sheetH,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Center(
+                        child: Container(
+                          margin: const EdgeInsets.only(top: 8, bottom: 10),
+                          width: 40,
+                          height: 4,
+                          decoration: BoxDecoration(
+                            color: Colors.white24,
+                            borderRadius: BorderRadius.circular(2),
+                          ),
                         ),
                       ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 8, 8, 4),
-                      child: Row(
-                        children: [
-                          const Expanded(
-                            child: Text(
-                              '誰に祝いのショットを飛ばす？',
-                              style: TextStyle(
-                                color: Colors.amberAccent,
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        child: Row(
+                          children: [
+                            const SizedBox(width: 8),
+                            const Expanded(
+                              child: Text(
+                                '発射内容を選択',
+                                style: TextStyle(
+                                  color: Colors.amberAccent,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
                             ),
-                          ),
-                          TextButton(
-                            onPressed: () {
-                              setModalState(() {
-                                temp.clear();
-                              });
-                            },
-                            child: const Text('全解除', style: TextStyle(color: Colors.white54, fontSize: 13)),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 16),
-                      child: Text(
-                        '複数タップで選択・解除できます',
-                        style: TextStyle(color: Colors.white38, fontSize: 12),
-                      ),
-                    ),
-                    ConstrainedBox(
-                      constraints: BoxConstraints(
-                        maxHeight: MediaQuery.sizeOf(ctx).height * 0.45,
-                      ),
-                      child: ListView(
-                        shrinkWrap: true,
-                        children: _targets.map((t) {
-                          final checked = temp.contains(t);
-                          return CheckboxListTile(
-                            value: checked,
-                            onChanged: (v) {
-                              setModalState(() {
-                                if (v == true) {
-                                  if (!temp.contains(t)) temp.add(t);
-                                } else {
-                                  temp.remove(t);
-                                }
-                              });
-                            },
-                            title: Text(t, style: const TextStyle(color: Colors.white, fontSize: 15)),
-                            activeColor: Colors.amberAccent,
-                            checkColor: Colors.black87,
-                            side: const BorderSide(color: Colors.white24),
-                            controlAffinity: ListTileControlAffinity.leading,
-                          );
-                        }).toList(),
-                      ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-                      child: SizedBox(
-                        height: 50,
-                        child: ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.amberAccent,
-                            foregroundColor: Colors.black87,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                          ),
-                          onPressed: () {
-                            setState(() => _selectedTargets = List<String>.from(temp));
-                            Navigator.pop(ctx);
-                          },
-                          child: const Text('完了', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                            IconButton(
+                              onPressed: () => Navigator.pop(ctx, false),
+                              icon: const Icon(Icons.close, color: Colors.white54),
+                            ),
+                          ],
                         ),
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 10),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: _buildItemToggleButton(
+                                label: 'テキーラ',
+                                selected: tempItemType == 'tequila',
+                                onTap: () => setModalState(() => tempItemType = 'tequila'),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: _buildItemToggleButton(
+                                label: 'バリュー',
+                                selected: tempItemType == 'value_pack',
+                                onTap: () => setModalState(() => tempItemType = 'value_pack'),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: _buildItemToggleButton(
+                                label: 'シャンパン',
+                                selected: tempItemType == 'champagne',
+                                onTap: () => setModalState(() => tempItemType = 'champagne'),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Expanded(
+                        child: SingleChildScrollView(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              SizedBox(
+                                height: targetBlockHeight,
+                                child: requiresTarget
+                                    ? Padding(
+                                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            const Text('飛ばす相手', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                                            const SizedBox(height: 6),
+                                            Expanded(
+                                              child: Container(
+                                                width: double.infinity,
+                                                padding: const EdgeInsets.all(10),
+                                                decoration: BoxDecoration(
+                                                  color: Colors.black54,
+                                                  borderRadius: BorderRadius.circular(12),
+                                                  border: Border.all(color: Colors.white24),
+                                                ),
+                                                child: SingleChildScrollView(
+                                                  child: Column(
+                                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                                    children: [
+                                                      Row(
+                                                        children: [
+                                                          const Icon(Icons.people_alt_outlined, color: Colors.amberAccent, size: 18),
+                                                          const SizedBox(width: 6),
+                                                          Expanded(
+                                                            child: Text(
+                                                              _targetSummary(tempTargets),
+                                                              style: TextStyle(
+                                                                color: tempTargets.isEmpty ? Colors.white38 : Colors.white,
+                                                                fontSize: 13,
+                                                                fontWeight: FontWeight.w600,
+                                                              ),
+                                                            ),
+                                                          ),
+                                                          TextButton(
+                                                            onPressed: () {
+                                                              setModalState(() {
+                                                                tempTargets.clear();
+                                                              });
+                                                            },
+                                                            child: const Text('全解除', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                      const SizedBox(height: 6),
+                                                      Wrap(
+                                                        spacing: 6,
+                                                        runSpacing: 6,
+                                                        children: _targets.map((name) {
+                                                          final selected = tempTargets.contains(name);
+                                                          return FilterChip(
+                                                            label: Text(name, style: const TextStyle(fontSize: 12)),
+                                                            selected: selected,
+                                                            onSelected: (_) {
+                                                              setModalState(() {
+                                                                if (selected) {
+                                                                  tempTargets.remove(name);
+                                                                } else {
+                                                                  tempTargets.add(name);
+                                                                }
+                                                              });
+                                                            },
+                                                            selectedColor: Colors.amberAccent,
+                                                            backgroundColor: Colors.black87,
+                                                            labelStyle: TextStyle(
+                                                              color: selected ? Colors.black87 : Colors.white,
+                                                              fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+                                                            ),
+                                                            side: BorderSide(color: selected ? Colors.amberAccent : Colors.white24),
+                                                          );
+                                                        }).toList(),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      )
+                                    : Padding(
+                                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                                        child: Align(
+                                          alignment: Alignment.topCenter,
+                                          child: Text(
+                                            'この商品は相手指定なしで注文します。指定したい場合はコメントに記入してください。',
+                                            textAlign: TextAlign.center,
+                                            style: TextStyle(color: Colors.white54.withValues(alpha: 0.9), fontSize: 13, height: 1.45),
+                                          ),
+                                        ),
+                                      ),
+                              ),
+                              const SizedBox(height: 12),
+                              if (maxQty > 1)
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      IconButton(
+                                        icon: const Icon(Icons.remove_circle_outline, color: Colors.amberAccent, size: 28),
+                                        onPressed: tempQuantity > 1
+                                            ? () => setModalState(() => tempQuantity--)
+                                            : null,
+                                      ),
+                                      Text(
+                                        '$tempQuantity 個',
+                                        style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+                                      ),
+                                      IconButton(
+                                        icon: const Icon(Icons.add_circle_outline, color: Colors.amberAccent, size: 28),
+                                        onPressed: tempQuantity < maxQty
+                                            ? () => setModalState(() => tempQuantity++)
+                                            : null,
+                                      ),
+                                    ],
+                                  ),
+                                )
+                              else
+                                const Padding(
+                                  padding: EdgeInsets.symmetric(horizontal: 16),
+                                  child: Text('数量は 1 固定です', textAlign: TextAlign.center, style: TextStyle(color: Colors.white54)),
+                                ),
+                              const SizedBox(height: 8),
+                              Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 16),
+                                child: TextField(
+                                  maxLines: 2,
+                                  onChanged: (v) => tempNote = v.trim(),
+                                  style: const TextStyle(color: Colors.white),
+                                  decoration: InputDecoration(
+                                    hintText: 'コメント（任意）',
+                                    hintStyle: const TextStyle(color: Colors.white38),
+                                    filled: true,
+                                    fillColor: Colors.black54,
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                      borderSide: const BorderSide(color: Colors.amberAccent),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 16),
+                                child: Text(
+                                  '合計金額: ¥${est.toString()}',
+                                  textAlign: TextAlign.right,
+                                  style: const TextStyle(color: Colors.amberAccent, fontWeight: FontWeight.bold),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: SizedBox(
+                          height: 52,
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.amberAccent,
+                              foregroundColor: Colors.black87,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                            ),
+                            onPressed: () {
+                              if (requiresTarget && tempTargets.isEmpty) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('テキーラは相手を1人以上選択してください'),
+                                    backgroundColor: Colors.redAccent,
+                                  ),
+                                );
+                                return;
+                              }
+                              Navigator.pop(ctx, true);
+                            },
+                            child: const Text('この内容で進む', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                          ),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                        child: SizedBox(
+                          height: 44,
+                          child: OutlinedButton(
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.white70,
+                              side: const BorderSide(color: Colors.white24),
+                            ),
+                            onPressed: () => Navigator.pop(ctx, false),
+                            child: const Text('閉じる'),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              );
-            },
-          ),
+              ),
+            );
+          },
         );
       },
     );
+
+    if (confirmed == true) {
+      setState(() {
+        _selectedItemType = tempItemType;
+        _selectedQuantity = tempQuantity;
+        _selectedTargets = List<String>.from(tempTargets);
+        _orderNote = tempNote;
+      });
+      return true;
+    }
+    return false;
   }
 
   void _onSendComment() async {
@@ -387,13 +664,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _onSendTequila() async {
-    if (_selectedTargets.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('ターゲットを1人以上選択してください！'), backgroundColor: Colors.redAccent),
-      );
-      return;
-    }
-
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -401,6 +671,16 @@ class _HomeScreenState extends State<HomeScreen> {
       );
       return;
     }
+
+    if (_selectedStore == null || _nameController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('先に店舗とニックネームを設定してください'), backgroundColor: Colors.redAccent),
+      );
+      return;
+    }
+
+    final confirmedOrder = await _showLaunchOrderSheet();
+    if (!confirmedOrder) return;
 
     final goPay = await showDialog<bool>(
       context: context,
@@ -413,7 +693,7 @@ class _HomeScreenState extends State<HomeScreen> {
             side: const BorderSide(color: Colors.amberAccent, width: 2),
           ),
           title: const Center(
-            child: Text('テキーラ購入', style: TextStyle(color: Colors.amberAccent, fontWeight: FontWeight.bold)),
+            child: Text('決済確認', style: TextStyle(color: Colors.amberAccent, fontWeight: FontWeight.bold)),
           ),
           content: const Text(
             '決済画面へ進みます。支払いが完了したらアプリに戻ってください',
@@ -473,13 +753,12 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<String?> _showTequilaMessageDialog() async {
-    final targetsStr = _selectedTargets.join('、');
-    return showDialog<String>(
+  Future<String?> _showPostPaymentCommentDialog(String initialValue) async {
+    final controller = TextEditingController(text: initialValue);
+    final result = await showDialog<String>(
       context: context,
-      barrierDismissible: false,
+      barrierDismissible: true,
       builder: (context) {
-        final controller = TextEditingController();
         return AlertDialog(
           backgroundColor: Colors.grey[900],
           shape: RoundedRectangleBorder(
@@ -487,32 +766,22 @@ class _HomeScreenState extends State<HomeScreen> {
             side: const BorderSide(color: Colors.amberAccent, width: 2),
           ),
           title: const Center(
-            child: Text('🥃 煽りメッセージ（任意）', style: TextStyle(color: Colors.amberAccent, fontWeight: FontWeight.bold)),
+            child: Text('コメント（任意）', style: TextStyle(color: Colors.amberAccent, fontWeight: FontWeight.bold)),
           ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                '$targetsStr にテキーラ発射！',
-                style: const TextStyle(color: Colors.white70, fontSize: 14),
+          content: TextField(
+            controller: controller,
+            maxLines: 3,
+            style: const TextStyle(color: Colors.white),
+            decoration: InputDecoration(
+              hintText: '任意でメッセージを入力',
+              hintStyle: const TextStyle(color: Colors.white38),
+              filled: true,
+              fillColor: Colors.black54,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: const BorderSide(color: Colors.amberAccent),
               ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: controller,
-                maxLines: 2,
-                style: const TextStyle(color: Colors.white, fontSize: 16),
-                decoration: InputDecoration(
-                  hintText: '空欄の場合は「〇〇にテキーラ発射！！」で表示',
-                  hintStyle: const TextStyle(color: Colors.white54, fontSize: 12),
-                  filled: true,
-                  fillColor: Colors.black54,
-                  enabledBorder: OutlineInputBorder(
-                    borderSide: const BorderSide(color: Colors.amberAccent),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-              ),
-            ],
+            ),
           ),
           actions: [
             TextButton(
@@ -520,29 +789,40 @@ class _HomeScreenState extends State<HomeScreen> {
               child: const Text('キャンセル', style: TextStyle(color: Colors.white54)),
             ),
             ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.amberAccent, foregroundColor: Colors.black),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.amberAccent, foregroundColor: Colors.black87),
               onPressed: () => Navigator.pop(context, controller.text.trim()),
-              child: const Text('送信'),
+              child: const Text('発射を確定'),
             ),
           ],
         );
       },
     );
+    controller.dispose();
+    return result;
   }
 
   Future<void> _onTequilaPaymentCompleteTapped() async {
     if (_isLoading) return;
-    final tequilaMessage = await _showTequilaMessageDialog();
-    if (tequilaMessage == null) return;
-
+    final comment = await _showPostPaymentCommentDialog(_orderNote);
+    if (comment == null) return;
     setState(() => _isLoading = true);
-    final targetsStr = _selectedTargets.join('、');
+    final itemType = _selectedItemType;
+    final itemLabel = _itemLabel(itemType);
+    final targets = _requiresTarget(itemType)
+        ? List<String>.from(_selectedTargets)
+        : <String>[];
+    final autoMessage = _requiresTarget(itemType)
+        ? '$itemLabelを ${targets.join('、')} に${_selectedQuantity}回発射！！'
+        : '$itemLabel を${_selectedQuantity}個発射！！';
+    final message = comment.isNotEmpty ? '$autoMessage\n$comment' : autoMessage;
     try {
       await addOrder(
         senderStore: _selectedStore!,
         senderName: _nameController.text.trim(),
-        targets: List<String>.from(_selectedTargets),
-        shotCount: _shotCount,
+        itemType: itemType,
+        quantity: _selectedQuantity,
+        targets: targets,
+        note: comment,
       ).timeout(
         const Duration(seconds: 15),
         onTimeout: () => throw TimeoutException(
@@ -552,22 +832,24 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       );
 
-      final superChatText = tequilaMessage.isNotEmpty
-          ? tequilaMessage
-          : '$targetsStr にテキーラ発射！！';
       await addSuperChat(
         senderName: '$_selectedStore (${_nameController.text.trim()})',
-        text: superChatText,
+        text: message,
         senderStore: _selectedStore,
         senderNickname: _nameController.text.trim(),
-        targets: List<String>.from(_selectedTargets),
-        shotCount: _shotCount,
+        itemType: itemType,
+        itemName: itemLabel,
+        quantity: _selectedQuantity,
+        targets: targets,
+        shotCount: _requiresTarget(itemType) ? _selectedQuantity : 0,
       );
 
       if (mounted) {
         setState(() {
           _selectedTargets.clear();
-          _shotCount = 1;
+          _selectedQuantity = 1;
+          _orderNote = '';
+          _selectedItemType = 'tequila';
           _awaitingTequilaAfterPayment = false;
         });
         _scrollToBottomAndResume();
@@ -577,7 +859,7 @@ class _HomeScreenState extends State<HomeScreen> {
               children: [
                 Icon(Icons.local_bar, color: Colors.white, size: 24),
                 SizedBox(width: 12),
-                Text('テキーラ発射完了！🥃🔥', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                Text('発射完了！🥃🔥', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
               ],
             ),
             backgroundColor: Colors.amber.shade700,
@@ -610,7 +892,7 @@ class _HomeScreenState extends State<HomeScreen> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const Text(
-            'PayPay で支払いを終えたら、下のボタンを押して注文を完了してください',
+            'PayPay で支払いを終えたら、下のボタンで発射を確定してください',
             textAlign: TextAlign.center,
             style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.3),
           ),
@@ -647,12 +929,27 @@ class _HomeScreenState extends State<HomeScreen> {
       final timeStr = createdAt != null
           ? '${createdAt.toDate().hour.toString().padLeft(2, '0')}:${createdAt.toDate().minute.toString().padLeft(2, '0')}'
           : '--:--';
-      final shotCount = (d['shotCount'] as num?)?.toInt() ?? (d['shotCountPerTarget'] as num?)?.toInt() ?? 1;
+      final itemType = d['itemType'] as String? ?? 'tequila';
+      final quantity = (d['quantity'] as num?)?.toInt()
+          ?? (d['shotCount'] as num?)?.toInt()
+          ?? (d['shotCountPerTarget'] as num?)?.toInt()
+          ?? 1;
+      final unitPrice = (d['unitPrice'] as num?)?.toInt()
+          ?? unitPriceByItemType[itemType]
+          ?? 1000;
+      final totalPrice = (d['totalPrice'] as num?)?.toInt()
+          ?? (itemType == 'tequila'
+              ? unitPrice * quantity * List<String>.from(d['targets'] ?? []).length
+              : unitPrice * quantity);
       return {
         'id': doc.id,
         'store': storeLabel,
+        'itemType': itemType,
+        'itemName': d['itemName'] as String? ?? _itemLabel(itemType),
         'targets': List<String>.from(d['targets'] ?? []),
-        'count': shotCount,
+        'count': quantity,
+        'unitPrice': unitPrice,
+        'totalPrice': totalPrice,
         'time': timeStr,
         'isServed': d['isServed'] as bool? ?? false,
         'status': d['status'] as String?,
@@ -882,6 +1179,8 @@ class _HomeScreenState extends State<HomeScreen> {
                                 final isSuperChat = d['isSuperChat'] as bool? ?? false;
                                 final senderStore = d['senderStore'] as String?;
                                 final senderNickname = d['senderNickname'] as String?;
+                                final itemName = d['itemName'] as String?;
+                                final quantity = (d['quantity'] as num?)?.toInt();
                                 final targets = List<String>.from(d['targets'] ?? []);
                                 final shotCount = (d['shotCount'] as num?)?.toInt();
                                 return _buildChatMessage(
@@ -890,6 +1189,8 @@ class _HomeScreenState extends State<HomeScreen> {
                                   isSuperChat: isSuperChat,
                                   senderStore: senderStore,
                                   senderNickname: senderNickname,
+                                  itemName: itemName,
+                                  quantity: quantity,
                                   targets: targets,
                                   shotCount: shotCount,
                                 );
@@ -966,56 +1267,6 @@ class _HomeScreenState extends State<HomeScreen> {
                                           ],
                                         ),
                                       ),
-                                      const SizedBox(height: 12),
-                                      const Text('誰に祝いのショットを飛ばす？', style: TextStyle(color: Colors.white70, fontSize: 13)),
-                                      const SizedBox(height: 8),
-                                      Material(
-                                        color: Colors.black54,
-                                        borderRadius: BorderRadius.circular(14),
-                                        child: InkWell(
-                                          onTap: (_isLoading || _awaitingTequilaAfterPayment) ? null : _showTargetPickerBottomSheet,
-                                          borderRadius: BorderRadius.circular(14),
-                                          child: Padding(
-                                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                                            child: Row(
-                                              children: [
-                                                const Icon(Icons.people_alt_outlined, color: Colors.amberAccent, size: 22),
-                                                const SizedBox(width: 10),
-                                                Expanded(
-                                                  child: Text(
-                                                    _targetSelectionSummary(),
-                                                    style: TextStyle(
-                                                      color: _selectedTargets.isEmpty ? Colors.white38 : Colors.white,
-                                                      fontSize: 14,
-                                                      fontWeight: _selectedTargets.isEmpty ? FontWeight.normal : FontWeight.w600,
-                                                    ),
-                                                    maxLines: 2,
-                                                    overflow: TextOverflow.ellipsis,
-                                                  ),
-                                                ),
-                                                const Icon(Icons.keyboard_arrow_up, color: Colors.white54, size: 22),
-                                              ],
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                      const SizedBox(height: 8),
-                                      Row(
-                                        mainAxisAlignment: MainAxisAlignment.center,
-                                        children: [
-                                          IconButton(
-                                            icon: const Icon(Icons.remove_circle_outline, color: Colors.amberAccent, size: 28),
-                                            onPressed: () {
-                                              if (_shotCount > 1) setState(() => _shotCount--);
-                                            },
-                                          ),
-                                          Text('$_shotCount 杯', style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
-                                          IconButton(
-                                            icon: const Icon(Icons.add_circle_outline, color: Colors.amberAccent, size: 28),
-                                            onPressed: () => setState(() => _shotCount++),
-                                          ),
-                                        ],
-                                      ),
                                       const SizedBox(height: 8),
                                       SizedBox(
                                         height: 56,
@@ -1028,11 +1279,9 @@ class _HomeScreenState extends State<HomeScreen> {
                                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
                                           ),
                                           onPressed: (_isLoading || _awaitingTequilaAfterPayment) ? null : _onSendTequila,
-                                          child: Text(
-                                            _awaitingTequilaAfterPayment ? '支払い確認を完了してください' : 'テキーラを送信！！ 🥃',
-                                            textAlign: TextAlign.center,
-                                            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
-                                          ),
+                                          child: Text(_awaitingTequilaAfterPayment ? '支払い確認を完了してください' : '発射！！ 🥃',
+                                              textAlign: TextAlign.center,
+                                              style: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold)),
                                         ),
                                       ),
                                     ],
@@ -1083,21 +1332,28 @@ class _HomeScreenState extends State<HomeScreen> {
     required bool isSuperChat,
     String? senderStore,
     String? senderNickname,
+    String? itemName,
+    int? quantity,
     List<String>? targets,
     int? shotCount,
   }) {
     if (isSuperChat) {
-      final hasAutoInfo = targets != null && targets.isNotEmpty && shotCount != null;
+      final hasAutoInfo = itemName != null || (targets != null && targets.isNotEmpty && shotCount != null);
       String autoInfo = senderName;
       if (hasAutoInfo) {
+        final q = quantity ?? shotCount ?? 1;
+        final item = itemName ?? 'テキーラ';
         final storePart = senderStore?.isNotEmpty == true ? senderStore! : '';
         final nickPart = senderNickname?.isNotEmpty == true ? senderNickname! : '';
         final fromPart = storePart.isNotEmpty && nickPart.isNotEmpty
             ? '$storePart ($nickPart) から'
             : (storePart.isNotEmpty ? '$storePart から' : (nickPart.isNotEmpty ? '$nickPart から' : ''));
+        final targetStr = (targets != null && targets.isNotEmpty)
+            ? '${targets.join('、')} に '
+            : '';
         autoInfo = fromPart.isNotEmpty
-            ? '$fromPart ${targets!.join('、')} に ${shotCount}杯 ずつ発射！！'
-            : '${targets!.join('、')} に ${shotCount}杯 ずつ発射！！';
+            ? '$fromPart $targetStr$item を${q}個発射！！'
+            : '$targetStr$item を${q}個発射！！';
       }
       return Container(
         margin: const EdgeInsets.only(bottom: 8),
@@ -1166,7 +1422,10 @@ class _HomeScreenState extends State<HomeScreen> {
         final isServed = order['isServed'] as bool;
         final orderStatus = order['status'] as String?;
         final isPending = orderStatus == 'pending';
-        final targets = (order['targets'] as List).join(' , ');
+        final itemName = order['itemName'] as String? ?? 'ドリンク';
+        final quantity = order['count'] as int? ?? 1;
+        final targets = List<String>.from(order['targets'] ?? []);
+        final targetText = targets.isEmpty ? '相手指定なし' : '${targets.join(' , ')} 宛';
         final orderId = order['id'] as String;
 
         return Card(
@@ -1183,7 +1442,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 CircleAvatar(
                   backgroundColor: isServed ? Colors.grey[800] : Colors.amberAccent.withOpacity(0.2),
                   radius: 24,
-                  child: Text('${order['count']}杯', style: TextStyle(color: isServed ? Colors.grey : Colors.amberAccent, fontWeight: FontWeight.bold)),
+                  child: Text('${quantity}個', style: TextStyle(color: isServed ? Colors.grey : Colors.amberAccent, fontWeight: FontWeight.bold)),
                 ),
                 const SizedBox(width: 16),
                 Expanded(
@@ -1194,7 +1453,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         children: [
                           Flexible(
                             child: Text(
-                              '$targets 宛',
+                              '$itemName × $quantity',
                               style: TextStyle(
                                 color: isServed ? Colors.grey : Colors.white,
                                 fontSize: 18,
@@ -1224,6 +1483,8 @@ class _HomeScreenState extends State<HomeScreen> {
                         ],
                       ),
                       const SizedBox(height: 4),
+                      Text(targetText, style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                      const SizedBox(height: 2),
                       Text('送り主: ${order['store']} (${order['time']})', style: const TextStyle(color: Colors.white54, fontSize: 14)),
                     ],
                   ),
@@ -1246,17 +1507,20 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildAdminSalesView(List<Map<String, dynamic>> orders) {
     Map<String, int> salesByStore = {};
+    Map<String, int> salesByItem = {};
+    Map<String, int> quantityByItem = {};
     int grandTotal = 0;
 
     for (var order in orders) {
       final fullStoreName = order['store'] as String;
       final storeName = fullStoreName.split(' (')[0];
-
-      final targetCount = (order['targets'] as List).length;
-      final shotCount = order['count'] as int;
-      final price = targetCount * shotCount * 1000;
+      final itemName = order['itemName'] as String? ?? 'ドリンク';
+      final quantity = order['count'] as int? ?? 1;
+      final price = order['totalPrice'] as int? ?? 0;
 
       salesByStore[storeName] = (salesByStore[storeName] ?? 0) + price;
+      salesByItem[itemName] = (salesByItem[itemName] ?? 0) + price;
+      quantityByItem[itemName] = (quantityByItem[itemName] ?? 0) + quantity;
       grandTotal += price;
     }
 
@@ -1265,6 +1529,8 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     var sortedSales = salesByStore.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    var sortedItems = salesByItem.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
 
     return Column(
@@ -1283,6 +1549,38 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
         const SizedBox(height: 10),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+          child: Container(
+            width: double.infinity,
+            decoration: BoxDecoration(
+              color: Colors.black54,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.white24),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: sortedItems.map((entry) {
+                final item = entry.key;
+                final amount = entry.value;
+                final qty = quantityByItem[item] ?? 0;
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Row(
+                    children: [
+                      Expanded(child: Text('$item（$qty個）', style: const TextStyle(color: Colors.white70))),
+                      Text(
+                        '¥ ${amount.toString().replaceAllMapped(RegExp(r'(\\d{1,3})(?=(\\d{3})+(?!\\d))'), (Match m) => '${m[1]},')}',
+                        style: const TextStyle(color: Colors.amberAccent, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+        ),
         const Padding(
           padding: EdgeInsets.symmetric(horizontal: 20, vertical: 10),
           child: Align(
@@ -1352,6 +1650,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     final isSuperChat = d['isSuperChat'] as bool? ?? false;
                     final senderStore = d['senderStore'] as String?;
                     final senderNickname = d['senderNickname'] as String?;
+                    final itemName = d['itemName'] as String?;
+                    final quantity = (d['quantity'] as num?)?.toInt();
                     final targets = List<String>.from(d['targets'] ?? []);
                     final shotCount = (d['shotCount'] as num?)?.toInt();
                     return _buildChatMessage(
@@ -1360,6 +1660,8 @@ class _HomeScreenState extends State<HomeScreen> {
                       isSuperChat: isSuperChat,
                       senderStore: senderStore,
                       senderNickname: senderNickname,
+                      itemName: itemName,
+                      quantity: quantity,
                       targets: targets,
                       shotCount: shotCount,
                     );

@@ -1,7 +1,18 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 const String defaultEventId = 'defaultEvent';
-const int unitPrice = 1000;
+
+const Map<String, int> unitPriceByItemType = {
+  'tequila': 500,
+  'value_pack': 3000,
+  'champagne': 5500,
+};
+
+const Map<String, String> itemLabelByType = {
+  'tequila': 'テキーラ',
+  'value_pack': 'バリュー',
+  'champagne': 'シャンパン',
+};
 
 CollectionReference<Map<String, dynamic>> get _ordersRef =>
     FirebaseFirestore.instance
@@ -17,16 +28,30 @@ Stream<QuerySnapshot<Map<String, dynamic>>> watchOrders() =>
 Future<DocumentReference<Map<String, dynamic>>> addOrder({
   required String senderStore,
   required String senderName,
+  required String itemType,
+  required int quantity,
   required List<String> targets,
-  required int shotCount,
+  String? note,
 }) {
-  final totalPrice = targets.length * shotCount * unitPrice;
+  final unitPrice = unitPriceByItemType[itemType] ?? 500;
+  final requiresTarget = itemType == 'tequila';
+  final safeTargets = requiresTarget ? targets : <String>[];
+  final totalPrice = requiresTarget
+      ? unitPrice * quantity * safeTargets.length
+      : unitPrice * quantity;
 
   return _ordersRef.add({
     'senderStore': senderStore,
     'senderName': senderName,
-    'targets': targets,
-    'shotCount': shotCount,
+    'itemType': itemType,
+    'itemName': itemLabelByType[itemType] ?? itemType,
+    'unitPrice': unitPrice,
+    'quantity': quantity,
+    'requiresTarget': requiresTarget,
+    'targets': safeTargets,
+    // 旧管理画面互換のため当面残す（tequila 以外は 0）
+    'shotCount': requiresTarget ? quantity : 0,
+    if (note != null && note.isNotEmpty) 'note': note,
     'totalPrice': totalPrice,
     'isServed': false,
     'status': 'pending',

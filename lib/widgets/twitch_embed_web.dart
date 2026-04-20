@@ -19,7 +19,10 @@ void _registerTwitchViewFactory() {
       iframe.style
         ..border = '0'
         ..width = '100%'
-        ..height = '100%';
+        ..height = '100%'
+        // HtmlElementView は Flutter の Overlay より前面でヒットするため、
+        // UI 操作（ボトムシート等）を優先してタップを通さない。
+        ..pointerEvents = 'none';
       return iframe;
     },
   );
