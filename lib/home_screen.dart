@@ -232,14 +232,133 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _toggleTarget(String target) {
-    setState(() {
-      if (_selectedTargets.contains(target)) {
-        _selectedTargets.remove(target);
-      } else {
-        _selectedTargets.add(target);
-      }
-    });
+  String _targetSelectionSummary() {
+    if (_selectedTargets.isEmpty) {
+      return 'タップして選ぶ（複数選択可）';
+    }
+    if (_selectedTargets.length <= 3) {
+      return _selectedTargets.join('、');
+    }
+    return '${_selectedTargets.take(2).join('、')} ほか${_selectedTargets.length}人';
+  }
+
+  void _showTargetPickerBottomSheet() {
+    if (_isLoading) return;
+    final temp = List<String>.from(_selectedTargets);
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      isScrollControlled: true,
+      builder: (ctx) {
+        return Padding(
+          padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(ctx).bottom),
+          child: StatefulBuilder(
+            builder: (context, setModalState) {
+              return SafeArea(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Center(
+                      child: Container(
+                        margin: const EdgeInsets.only(top: 8, bottom: 4),
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: Colors.white24,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 8, 4),
+                      child: Row(
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              '誰に祝いのショットを飛ばす？',
+                              style: TextStyle(
+                                color: Colors.amberAccent,
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: () {
+                              setModalState(() {
+                                temp.clear();
+                              });
+                            },
+                            child: const Text('全解除', style: TextStyle(color: Colors.white54, fontSize: 13)),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 16),
+                      child: Text(
+                        '複数タップで選択・解除できます',
+                        style: TextStyle(color: Colors.white38, fontSize: 12),
+                      ),
+                    ),
+                    ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxHeight: MediaQuery.sizeOf(ctx).height * 0.45,
+                      ),
+                      child: ListView(
+                        shrinkWrap: true,
+                        children: _targets.map((t) {
+                          final checked = temp.contains(t);
+                          return CheckboxListTile(
+                            value: checked,
+                            onChanged: (v) {
+                              setModalState(() {
+                                if (v == true) {
+                                  if (!temp.contains(t)) temp.add(t);
+                                } else {
+                                  temp.remove(t);
+                                }
+                              });
+                            },
+                            title: Text(t, style: const TextStyle(color: Colors.white, fontSize: 15)),
+                            activeColor: Colors.amberAccent,
+                            checkColor: Colors.black87,
+                            side: const BorderSide(color: Colors.white24),
+                            controlAffinity: ListTileControlAffinity.leading,
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                      child: SizedBox(
+                        height: 50,
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.amberAccent,
+                            foregroundColor: Colors.black87,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                          ),
+                          onPressed: () {
+                            setState(() => _selectedTargets = List<String>.from(temp));
+                            Navigator.pop(ctx);
+                          },
+                          child: const Text('完了', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
   }
 
   void _onSendComment() async {
@@ -850,24 +969,35 @@ class _HomeScreenState extends State<HomeScreen> {
                                       const SizedBox(height: 12),
                                       const Text('誰に祝いのショットを飛ばす？', style: TextStyle(color: Colors.white70, fontSize: 13)),
                                       const SizedBox(height: 8),
-                                      Wrap(
-                                        spacing: 6,
-                                        runSpacing: 6,
-                                        children: _targets.map((target) {
-                                          final isSelected = _selectedTargets.contains(target);
-                                          return FilterChip(
-                                            label: Text(target, style: const TextStyle(fontSize: 12)),
-                                            labelStyle: TextStyle(
-                                              color: isSelected ? Colors.black : Colors.white,
-                                              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                      Material(
+                                        color: Colors.black54,
+                                        borderRadius: BorderRadius.circular(14),
+                                        child: InkWell(
+                                          onTap: (_isLoading || _awaitingTequilaAfterPayment) ? null : _showTargetPickerBottomSheet,
+                                          borderRadius: BorderRadius.circular(14),
+                                          child: Padding(
+                                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                                            child: Row(
+                                              children: [
+                                                const Icon(Icons.people_alt_outlined, color: Colors.amberAccent, size: 22),
+                                                const SizedBox(width: 10),
+                                                Expanded(
+                                                  child: Text(
+                                                    _targetSelectionSummary(),
+                                                    style: TextStyle(
+                                                      color: _selectedTargets.isEmpty ? Colors.white38 : Colors.white,
+                                                      fontSize: 14,
+                                                      fontWeight: _selectedTargets.isEmpty ? FontWeight.normal : FontWeight.w600,
+                                                    ),
+                                                    maxLines: 2,
+                                                    overflow: TextOverflow.ellipsis,
+                                                  ),
+                                                ),
+                                                const Icon(Icons.keyboard_arrow_up, color: Colors.white54, size: 22),
+                                              ],
                                             ),
-                                            backgroundColor: Colors.black54,
-                                            selectedColor: Colors.amberAccent,
-                                            side: BorderSide(color: isSelected ? Colors.amberAccent : Colors.white24),
-                                            selected: isSelected,
-                                            onSelected: (_) => _toggleTarget(target),
-                                          );
-                                        }).toList(),
+                                          ),
+                                        ),
                                       ),
                                       const SizedBox(height: 8),
                                       Row(
